@@ -1,6 +1,8 @@
 # Copyright 2021 Canonical
 # See LICENSE file for licensing details.
 import logging
+import glob
+import os
 
 from kubernetes import kubernetes
 
@@ -22,6 +24,9 @@ class MmeResources:
         self.core_api = kubernetes.client.CoreV1Api(kcl)
         self.auth_api = kubernetes.client.RbacAuthorizationV1Api(kcl)
 
+        self.script_path = "src/files/scripts/*.*"
+        self.config_path = "src/files/config/*.*"
+
     def apply(self) -> None:
         """Create the required Kubernetes resources for the dashboard"""
         # Create required Kubernetes Service Accounts
@@ -39,21 +44,6 @@ class MmeResources:
                     sa["namespace"],
                 )
                 self.core_api.patch_namespaced_service_account(name=sa["body"].metadata.name, **sa)
-
-        # Create Kubernetes Secrets
-        for secret in self._secrets:
-            s = self.core_api.list_namespaced_secret(
-                namespace=secret["namespace"],
-                field_selector=f"metadata.name={secret['body'].metadata.name}",
-            )
-            if not s.items:
-                self.core_api.create_namespaced_secret(**secret)
-            else:
-                logger.info(
-                    "secret '%s' in namespace '%s' exists, not creating",
-                    secret["body"].metadata.name,
-                    secret["namespace"],
-                )
 
         # Create Kubernetes Services
         for service in self._services:
@@ -121,30 +111,6 @@ class MmeResources:
                 )
                 self.auth_api.patch_namespaced_role_binding(name=rb["body"].metadata.name, **rb)
 
-        # Create Kubernetes Cluster Roles
-        for cr in self._clusterroles:
-            r = self.auth_api.list_cluster_role(
-                field_selector=f"metadata.name={cr['body'].metadata.name}",
-            )
-            if not r.items:
-                self.auth_api.create_cluster_role(**cr)
-            else:
-                logger.info("cluster role '%s' exists, patching", cr["body"].metadata.name)
-                self.auth_api.patch_cluster_role(name=cr["body"].metadata.name, **cr)
-
-        # Create Kubernetes Cluster Role Bindings
-        for crb in self._clusterrolebindings:
-            r = self.auth_api.list_cluster_role_binding(
-                field_selector=f"metadata.name={crb['body'].metadata.name}",
-            )
-            if not r.items:
-                self.auth_api.create_cluster_role_binding(**crb)
-            else:
-                logger.info(
-                    "cluster role binding '%s' exists, patching", crb["body"].metadata.name
-                )
-                self.auth_api.patch_cluster_role_binding(name=crb["body"].metadata.name, **crb)
-
         logger.info("Created additional Kubernetes resources")
 
     def delete(self) -> None:
@@ -153,11 +119,6 @@ class MmeResources:
         for sa in self._service_accounts:
             self.core_api.delete_namespaced_service_account(
                 namespace=sa["namespace"], name=sa["body"].metadata.name
-            )
-        # Delete Kubernetes secrets
-        for secret in self._secrets:
-            self.core_api.delete_namespaced_secret(
-                namespace=secret["namespace"], name=secret["body"].metadata.name
             )
         # Delete Kubernetes services
         for service in self._services:
@@ -179,73 +140,143 @@ class MmeResources:
             self.auth_api.delete_namespaced_role_binding(
                 namespace=rb["namespace"], name=rb["body"].metadata.name
             )
-        # Delete Kubernetes cluster roles
-        for cr in self._clusterroles:
-            self.auth_api.delete_cluster_role(name=cr["body"].metadata.name)
-        # Delete Kubernetes cluster role bindings
-        for crb in self._clusterrolebindings:
-            self.auth_api.delete_cluster_role_binding(name=crb["body"].metadata.name)
 
         logger.info("Deleted additional Kubernetes resources")
 
     @property
-    def dashboard_volumes(self) -> dict:
-        """Returns the additional volumes required by the Dashboard"""
-        # Get the service account details so we can reference it's token
-        service_account = self.core_api.read_namespaced_service_account(
-            name="mme", namespace=self.namespace
-        )
+    def add_mme_init_containers(self) -> dict:
+        """Returns the addtional init_containers required for mme"""
+        return [
+            kubernetes.client.V1Container(
+                name  = "mme-load-sctp-module",
+                command = ["bash", "-xc"],
+                args = ["if chroot /mnt/host-rootfs modinfo nf_conntrack_proto_sctp > /dev/null 2>&1; then chroot /mnt/host-rootfs modprobe nf_conntrack_proto_sctp; fi; chroot /mnt/host-rootfs modprobe tipc"],
+                image = "docker.io/omecproject/pod-init:1.0.0",
+                image_pull_policy = "IfNotPresent",
+                security_context = kubernetes.client.V1SecurityContext(
+                    privileged = True,
+                    run_as_user = 0,
+                ),
+                volume_mounts = self._sctp_module_volume_mounts,
+            ),
+            kubernetes.client.V1Container(
+                name  = "mme-init",
+                command = ["/opt/mme/scripts/mme-init.sh"],
+                image = "amitinfo2k/nucleus-mme:9f86f87",
+                image_pull_policy = "IfNotPresent",
+                env = [
+                    kubernetes.client.V1EnvVar(
+                        name = "POD_IP",
+                        value_from = kubernetes.client.V1EnvVarSource(
+                            field_ref = kubernetes.client.V1ObjectFieldSelector(field_path="status.podIP"),
+                        ),
+
+                    ),
+                ],
+                volume_mounts = self._mme_init_volume_mounts,
+            ),
+        ]
+
+    @property
+    def mme_volumes(self) -> dict:
+        """Returns the additional volumes required by the mme"""
         return [
             kubernetes.client.V1Volume(
-                name="mme-service-account",
-                secret=kubernetes.client.V1SecretVolumeSource(
-                    secret_name=service_account.secrets[0].name
+                name="scripts",
+                config_map=kubernetes.client.V1ConfigMapVolumeSource(
+                    name="mme-scripts",
+                    default_mode=493,
                 ),
             ),
-            # kubernetes.client.V1Volume(
-            #     name="mme-certs",
-            #     secret=kubernetes.client.V1SecretVolumeSource(
-            #         secret_name="mme-certs"
-            #     ),
-            # ),
             kubernetes.client.V1Volume(
-                name="tmp-volume-metrics",
-                empty_dir=kubernetes.client.V1EmptyDirVolumeSource(medium="Memory"),
+                name="configs",
+                config_map=kubernetes.client.V1ConfigMapVolumeSource(
+                    name="mme-configs",
+                    default_mode=420,
+                ),
             ),
             kubernetes.client.V1Volume(
-                name="tmp-volume-dashboard",
+                name="shared-data",
                 empty_dir=kubernetes.client.V1EmptyDirVolumeSource(),
             ),
-        ]
-
-    @property
-    def dashboard_volume_mounts(self) -> dict:
-        """Returns the additional volume mounts for the dashboard containers"""
-        return [
-            kubernetes.client.V1VolumeMount(mount_path="/tmp", name="tmp-volume-dashboard"),
-            # kubernetes.client.V1VolumeMount(
-            #     mount_path="/certs", name="mme-certs"
-            # ),
-            kubernetes.client.V1VolumeMount(
-                mount_path="/var/run/secrets/kubernetes.io/serviceaccount",
-                name="mme-service-account",
+            kubernetes.client.V1Volume(
+                name="shared-app",
+                empty_dir=kubernetes.client.V1EmptyDirVolumeSource(),
+            ),
+            kubernetes.client.V1Volume(
+                name="host-rootfs",
+                host_path=kubernetes.client.V1HostPathVolumeSource(path="/"),
             ),
         ]
 
     @property
-    def metrics_scraper_volume_mounts(self) -> dict:
-        """Returns the additional volume mounts for the scraper containers"""
+    def mme_volume_mounts(self) -> dict:
+        """Returns the additional volume mounts for the mme-app containers"""
         return [
-            kubernetes.client.V1VolumeMount(mount_path="/tmp", name="tmp-volume-metrics"),
             kubernetes.client.V1VolumeMount(
-                mount_path="/var/run/secrets/kubernetes.io/serviceaccount",
-                name="mme-service-account",
+                mount_path="/opt/mme/config/shared",
+                name="shared-data",
+            ),
+            kubernetes.client.V1VolumeMount(
+                mount_path="shared-app",
+                name="/tmp",
+            ),
+        ]
+
+    @property
+    def _sctp_module_volume_mounts(self) -> dict:
+        """Returns the additional volume mounts for the sctp-module init_container"""
+        return [
+            kubernetes.client.V1VolumeMount(
+                mount_path="/mnt/host-rootfs",
+                name="host-rootfs",
+            ),
+        ]
+
+    @property
+    def _mme_init_volume_mounts(self) -> dict:
+        """Returns the additional volume mounts for the mme-init init_container"""
+        return [
+            kubernetes.client.V1VolumeMount(
+                mount_path="/opt/mme/config/shared",
+                name="shared-data",
+            ),
+            kubernetes.client.V1VolumeMount(
+                mount_path="scripts",
+                name="/opt/mme/scripts",
+            ),
+            kubernetes.client.V1VolumeMount(
+                mount_path="configs",
+                name="/opt/mme/config",
+            ),
+        ]
+
+    @property
+    def s1ap_volume_mounts(self) -> dict:
+        """Returns the additional volume mounts for the s1ap containers"""
+        return [
+            kubernetes.client.V1VolumeMount(mount_path="/opt/mme/config/shared", name="shared-data"),
+            kubernetes.client.V1VolumeMount(
+                mount_path="/opt/mme/config/shared",
+                name="shared-data",
+            ),
+            kubernetes.client.V1VolumeMount(
+                mount_path="shared-app",
+                name="/tmp",
+            ),
+            kubernetes.client.V1VolumeMount(
+                mount_path="scripts",
+                name="/opt/mme/scripts",
+            ),
+            kubernetes.client.V1VolumeMount(
+                mount_path="configs",
+                name="/opt/mme/config",
             ),
         ]
 
     @property
     def _service_accounts(self) -> list:
-        """Return a dictionary containing parameters for the dashboard svc account"""
+        """Return a dictionary containing parameters for the mme svc account"""
         return [
             {
                 "namespace": self.namespace,
@@ -261,51 +292,8 @@ class MmeResources:
         ]
 
     @property
-    def _secrets(self) -> list:
-        """Return a list of secrets needed by the Kubernetes Dashboard"""
-        return [
-            {
-                "namespace": self.namespace,
-                "body": kubernetes.client.V1Secret(
-                    api_version="v1",
-                    metadata=kubernetes.client.V1ObjectMeta(
-                        namespace=self.namespace,
-                        name="mme-key-holder",
-                        labels={"app.kubernetes.io/name": self.app.name},
-                    ),
-                    type="Opaque",
-                ),
-            },
-            {
-                "namespace": self.namespace,
-                "body": kubernetes.client.V1Secret(
-                    api_version="v1",
-                    metadata=kubernetes.client.V1ObjectMeta(
-                        namespace=self.namespace,
-                        name="mme-csrf",
-                        labels={"app.kubernetes.io/name": self.app.name},
-                    ),
-                    type="Opaque",
-                    data={"csrf": ""},
-                ),
-            },
-            # {
-            #     "namespace": self.namespace,
-            #     "body": kubernetes.client.V1Secret(
-            #         api_version="v1",
-            #         metadata=kubernetes.client.V1ObjectMeta(
-            #             namespace=self.namespace,
-            #             name="mme-certs",
-            #             labels={"app.kubernetes.io/name": self.app.name},
-            #         ),
-            #         type="Opaque",
-            #     ),
-            # },
-        ]
-
-    @property
     def _services(self) -> list:
-        """Return a list of Kubernetes services needed by the Kubernetes Dashboard"""
+        """Return a list of Kubernetes services needed by the mme"""
         # Note that this service is actually created by Juju, we are patching
         # it here to include the correct port mapping
         # TODO: Update when support improves in Juju
@@ -381,9 +369,28 @@ class MmeResources:
             },
         ]
 
+    def loadfile(self, file_name):
+        """Read the file content and return content data"""
+        with open(file_name, 'r') as f:
+            data = f.read()
+            f.close()
+            return data
+
+
+    def _get_config_data(self, files_path):
+        """Return the dictionary of file contnent and name needed by mme"""
+        dicts = {}
+        for file_path in glob.glob(files_path):
+            file_data = self.loadfile(file_path)
+            file_name = os.path.basename(file_path)
+            dicts[file_name] = file_data
+        return dicts
+
     @property
     def _configmaps(self) -> list:
-        """Return a list of ConfigMaps needed by the Kubernetes Dashboard"""
+        """Return a list of ConfigMaps needed by the mme"""
+        dict_script = self._get_config_data(self.script_path)
+        dict_config = self._get_config_data(self.config_path)
         return [
             {
                 "namespace": self.namespace,
@@ -391,23 +398,35 @@ class MmeResources:
                     api_version="v1",
                     metadata=kubernetes.client.V1ObjectMeta(
                         namespace=self.namespace,
-                        name="mme-settings",
+                        name="mme-scripts",
                         labels={
                             "app.kubernetes.io/name": self.app.name,
                             "app": self.app.name
                         },
                     ),
-                    data=dict(
-                        configjson="Aman Thakral",
-                        mmeconf="Omec"
+                    data=dict_script,
+                ),
+            },
+            {
+                "namespace": self.namespace,
+                "body": kubernetes.client.V1ConfigMap(
+                    api_version="v1",
+                    metadata=kubernetes.client.V1ObjectMeta(
+                        namespace=self.namespace,
+                        name="mme-configs",
+                        labels={
+                            "app.kubernetes.io/name": self.app.name,
+                            "app": self.app.name
+                        },
                     ),
+                    data=dict_config,
                 ),
             }
         ]
 
     @property
     def _roles(self) -> list:
-        """Return a list of Roles required by the Kubernetes Dsahboard"""
+        """Return a list of Roles required by the mme"""
         return [
             {
                 "namespace": self.namespace,
@@ -419,42 +438,11 @@ class MmeResources:
                         labels={"app.kubernetes.io/name": self.app.name},
                     ),
                     rules=[
-                        # Allow Dashboard to get, update and delete Dashboard exclusive secrets.
+                        # Allow mme to get, update, delete, list and patch the resources
                         kubernetes.client.V1PolicyRule(
-                            api_groups=[""],
-                            resources=["secrets"],
-                            resource_names=[
-                                "mme-key-holder",
-                                "mme-certs",
-                                "mme-csrf",
-                            ],
-                            verbs=["get", "update", "delete"],
-                        ),
-                        # Allow Dashboard to update 'mme-settings' config map.
-                        kubernetes.client.V1PolicyRule(
-                            api_groups=[""],
-                            resources=["configmaps"],
-                            resource_names=["mme-settings"],
-                            verbs=["get", "update"],
-                        ),
-                        # Allow Dashboard to get metrics.
-                        kubernetes.client.V1PolicyRule(
-                            api_groups=[""],
-                            resources=["services"],
-                            resource_names=["heapster", "dashboard-metrics-scraper"],
-                            verbs=["proxy"],
-                        ),
-                        kubernetes.client.V1PolicyRule(
-                            api_groups=[""],
-                            resources=["services/proxy"],
-                            resource_names=[
-                                "heapster",
-                                "http:heapster:",
-                                "https:heapster:",
-                                "dashboard-metrics-scraper",
-                                "http:dashboard-metrics-scraper",
-                            ],
-                            verbs=["get"],
+                            api_groups=["", "extensions", "batch", "apps"],
+                            resources=["statefulsets", "daemonsets", "jobs", "pods", "services", "endpoints", "configmaps"],
+                            verbs=["get", "update", "delete", "list", "patch"],
                         ),
                     ],
                 ),
@@ -463,7 +451,7 @@ class MmeResources:
 
     @property
     def _rolebindings(self) -> list:
-        """Return a list of Role Bindings required by the Kubernetes Dsahboard"""
+        """Return a list of Role Bindings required by the mme"""
         return [
             {
                 "namespace": self.namespace,
@@ -487,55 +475,5 @@ class MmeResources:
                         )
                     ],
                 ),
-            }
-        ]
-
-    @property
-    def _clusterroles(self) -> list:
-        """Return a list of Cluster Roles required by the Kubernetes Dsahboard"""
-        return [
-            {
-                "body": kubernetes.client.V1ClusterRole(
-                    api_version="rbac.authorization.k8s.io/v1",
-                    metadata=kubernetes.client.V1ObjectMeta(
-                        name="mme",
-                        labels={"app.kubernetes.io/name": self.app.name},
-                    ),
-                    rules=[
-                        # Allow Metrics Scraper to get metrics from the Metrics server
-                        kubernetes.client.V1PolicyRule(
-                            api_groups=["metrics.k8s.io"],
-                            resources=["pods", "nodes"],
-                            verbs=["get", "list", "watch"],
-                        ),
-                    ],
-                )
-            }
-        ]
-
-    @property
-    def _clusterrolebindings(self) -> list:
-        """Return a list of Cluster Role Bindings required by the Kubernetes Dsahboard"""
-        return [
-            {
-                "body": kubernetes.client.V1ClusterRoleBinding(
-                    api_version="rbac.authorization.k8s.io/v1",
-                    metadata=kubernetes.client.V1ObjectMeta(
-                        name="mme",
-                        labels={"app.kubernetes.io/name": self.app.name},
-                    ),
-                    role_ref=kubernetes.client.V1RoleRef(
-                        api_group="rbac.authorization.k8s.io",
-                        kind="ClusterRole",
-                        name="mme",
-                    ),
-                    subjects=[
-                        kubernetes.client.V1Subject(
-                            kind="ServiceAccount",
-                            name="mme",
-                            namespace=self.namespace,
-                        )
-                    ],
-                )
             }
         ]

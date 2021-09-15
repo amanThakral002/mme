@@ -13,38 +13,30 @@ summary: |
 
 # TEMPLATE-TODO: replace with containers for your workload (delete for non-k8s)
 containers:
-  sctp:
-    resource: load-sctp
-  s1ap:
-    resource: mme-s1ap-image
+  mme:
+    resource: mme-image
     mounts:
       - storage: shared-data
         location: /opt/mme/config/shared
       - storage: shared-app
         location: /tmp
-  mme:
-    resource: mme-app-image
+  s1ap:
+    resource: mme-image
     mounts:
       - storage: shared-data
         location: /opt/mme/config/shared
       - storage: shared-app
         location: /tmp
 
-peers:
-  s1ap-peer:
-    interface: s1ap-peer
+# peers:
+#   s1ap-peer:
+#     interface: s1ap-peer
 
 
 resources:
-  load-sctp:
+  mme-image:
     type: oci-image
-    description: OCI image for sctp module
-  mme-s1ap-image:
-    type: oci-image
-    description: OCI image for mme-s1ap
-  mme-app-image:
-    type: oci-image
-    description: OCI image for mme-app
+    description: OCI image for mme
 
 storage:
   shared-data:
