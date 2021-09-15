@@ -15,18 +15,8 @@ summary: |
 containers:
   mme:
     resource: mme-image
-    mounts:
-      - storage: shared-data
-        location: /opt/mme/config/shared
-      - storage: shared-app
-        location: /tmp
   s1ap:
     resource: mme-image
-    mounts:
-      - storage: shared-data
-        location: /opt/mme/config/shared
-      - storage: shared-app
-        location: /tmp
 
 # peers:
 #   s1ap-peer:
@@ -37,9 +27,3 @@ resources:
   mme-image:
     type: oci-image
     description: OCI image for mme
-
-storage:
-  shared-data:
-    type: filesystem
-  shared-app:
-    type: filesystem

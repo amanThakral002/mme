@@ -36,8 +36,8 @@
     "sctp_port_external": 36412
   },
   "s6a": {
-    "host": "hss.default.svc.cluster.local",
+    "host": "hss.development.svc.cluster.local",
     "host_type": "freediameter",
-    "realm": "default.svc.cluster.local"
+    "realm": "development.svc.cluster.local"
   }
 }
