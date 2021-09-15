@@ -12,61 +12,75 @@ develop a new k8s charm using the Operator Framework:
     https://discourse.charmhub.io/t/4208
 """
 
+import datetime
 import logging
+import os
+from ipaddress import IPv4Address
+from pathlib import Path
+from subprocess import check_output
+from typing import Optional
 
-from ops.charm import CharmBase
+from cryptography import x509
+from kubernetes import kubernetes
+from ops.charm import CharmBase, InstallEvent, RemoveEvent
 from ops.framework import StoredState
 from ops.main import main
-from ops.model import ActiveStatus
+from ops.model import ActiveStatus, BlockedStatus, MaintenanceStatus
+from ops.pebble import ConnectionError
+
+import resource
 
 logger = logging.getLogger(__name__)
 
+# Reduce the log output from the Kubernetes library
+logging.getLogger("kubernetes").setLevel(logging.INFO)
 
 class MmeCharm(CharmBase):
     """Charm the service."""
 
+    _authed = False
     _stored = StoredState()
 
     def __init__(self, *args):
         super().__init__(*args)
-        self.framework.observe(self.on.httpbin_pebble_ready, self._on_httpbin_pebble_ready)
+        self.framework.observe(self.on.mme_pebble_ready, self._on_mme_pebble_ready)
+        self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(self.on.config_changed, self._on_config_changed)
-        self.framework.observe(self.on.fortune_action, self._on_fortune_action)
-        self._stored.set_default(things=[])
+        self.framework.observe(self.on.remove, self._on_remove)
 
-    def _on_httpbin_pebble_ready(self, event):
-        """Define and start a workload using the Pebble API.
+    def _update_mme_and_run(self):
+        self.unit.status = MaintenanceStatus('Configuring mme-app')
 
-        TEMPLATE-TODO: change this example to suit your needs.
-        You'll need to specify the right entrypoint and environment
-        configuration for your specific workload. Tip: you can see the
-        standard entrypoint of an existing container using docker inspect
-
-        Learn more about Pebble layers at https://github.com/canonical/pebble
-        """
-        # Get a reference the container attribute on the PebbleReadyEvent
-        container = event.workload
         # Define an initial Pebble layer configuration
         pebble_layer = {
-            "summary": "httpbin layer",
-            "description": "pebble config layer for httpbin",
+            "summary": "mme-app layer",
+            "description": "pebble config layer for mme-app",
             "services": {
-                "httpbin": {
+                "mme": {
                     "override": "replace",
-                    "summary": "httpbin",
-                    "command": "gunicorn -b 0.0.0.0:80 httpbin:app -k gevent",
+                    "summary": "mme",
+                    "command": """/bin/bash -c "while true; do echo 'Running mme-app'; sleep 10; done" """,
                     "startup": "enabled",
                     "environment": {"thing": self.model.config["thing"]},
                 }
             },
         }
+
+        container = self.unit.get_container("mme")
+
+        self._push_file_to_container(container, "src/files/scripts/*.*", scriptPath, 0o755)
+        self._push_file_to_container(container, "src/files/config/*.*", configPath, 0o644)
         # Add intial Pebble config layer using the Pebble API
-        container.add_layer("httpbin", pebble_layer, combine=True)
-        # Autostart any services that were defined with startup: enabled
-        container.autostart()
-        # Learn more about statuses in the SDK docs:
-        # https://juju.is/docs/sdk/constructs#heading--statuses
+        container.add_layer("mme", pebble_layer, combine=True)
+
+        if container.get_service("mme").is_running():
+            container.stop("mme")
+        container.start("mme")
+
         self.unit.status = ActiveStatus()
+
+    def _on_mme_pebble_ready(self, event):
+        self._update_mme_and_run()
 
     def _on_config_changed(self, _):
         """Just an example to show how to deal with changed configuration.
