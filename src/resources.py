@@ -218,8 +218,8 @@ class MmeResources:
                 name="shared-data",
             ),
             kubernetes.client.V1VolumeMount(
-                mount_path="shared-app",
-                name="/tmp",
+                name="shared-app",
+                mount_path="/tmp",
             ),
         ]
 
@@ -242,13 +242,18 @@ class MmeResources:
                 name="shared-data",
             ),
             kubernetes.client.V1VolumeMount(
-                mount_path="scripts",
-                name="/opt/mme/scripts",
+                name="scripts",
+                mount_path="/opt/mme/scripts",
             ),
             kubernetes.client.V1VolumeMount(
-                mount_path="configs",
-                name="/opt/mme/config",
+                name="configs",
+                mount_path="/opt/mme/config",
             ),
+            kubernetes.client.V1VolumeMount(
+                mount_path="/mnt/host-rootfs",
+                name="host-rootfs",
+            ),
+            
         ]
 
     @property
@@ -261,16 +266,16 @@ class MmeResources:
                 name="shared-data",
             ),
             kubernetes.client.V1VolumeMount(
-                mount_path="shared-app",
-                name="/tmp",
+                name="shared-app",
+                mount_path="/tmp",
             ),
             kubernetes.client.V1VolumeMount(
-                mount_path="scripts",
-                name="/opt/mme/scripts",
+                name="scripts",
+                mount_path="/opt/mme/scripts",
             ),
             kubernetes.client.V1VolumeMount(
-                mount_path="configs",
-                name="/opt/mme/config",
+                name="configs",
+                mount_path="/opt/mme/config",
             ),
         ]
 
