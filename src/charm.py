@@ -100,7 +100,7 @@ class MmeCharm(CharmBase):
     def _push_file_to_container(self, container, srcPath, dstPath, filePermission):
         for filePath in glob.glob(srcPath):
             print("Loading file name:" + filePath)
-            fileData = resources.loadfile(filePath)
+            fileData = resources.MmeResources(self).loadfile(filePath)
             fileName = os.path.basename(filePath)
             container.push(dstPath + fileName, fileData, make_dirs=True, permissions=filePermission)
 
@@ -202,7 +202,7 @@ class MmeCharm(CharmBase):
                     "startup": "enabled",
                     "environment": {
                         "thing": self.model.config["thing"],
-                        "POD_IP": self.pod_ip,
+                        "POD_IP": f"{self.pod_ip}",
                         "MMERUNENV": "container",
                     },
                 }
