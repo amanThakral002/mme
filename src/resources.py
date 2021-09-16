@@ -221,6 +221,14 @@ class MmeResources:
                 name="shared-app",
                 mount_path="/tmp",
             ),
+            kubernetes.client.V1VolumeMount(
+                name="scripts",
+                mount_path="/opt/mme/scripts",
+            ),
+            kubernetes.client.V1VolumeMount(
+                name="configs",
+                mount_path="/opt/mme/config",
+            ),
         ]
 
     @property
@@ -249,18 +257,12 @@ class MmeResources:
                 name="configs",
                 mount_path="/opt/mme/config",
             ),
-            kubernetes.client.V1VolumeMount(
-                mount_path="/mnt/host-rootfs",
-                name="host-rootfs",
-            ),
-            
         ]
 
     @property
     def s1ap_volume_mounts(self) -> dict:
         """Returns the additional volume mounts for the s1ap containers"""
         return [
-            kubernetes.client.V1VolumeMount(mount_path="/opt/mme/config/shared", name="shared-data"),
             kubernetes.client.V1VolumeMount(
                 mount_path="/opt/mme/config/shared",
                 name="shared-data",
@@ -280,6 +282,42 @@ class MmeResources:
         ]
 
     @property
+    def s6a_volume_mounts(self) -> dict:
+        """Returns the additional volume mounts for the s6a containers"""
+        return [
+            kubernetes.client.V1VolumeMount(
+                mount_path="/opt/mme/config/shared",
+                name="shared-data",
+            ),
+            kubernetes.client.V1VolumeMount(
+                name="shared-app",
+                mount_path="/tmp",
+            ),
+            kubernetes.client.V1VolumeMount(
+                name="scripts",
+                mount_path="/opt/mme/scripts",
+            ),
+        ]
+
+    @property
+    def s11_volume_mounts(self) -> dict:
+        """Returns the additional volume mounts for the s11 containers"""
+        return [
+            kubernetes.client.V1VolumeMount(
+                mount_path="/opt/mme/config/shared",
+                name="shared-data",
+            ),
+            kubernetes.client.V1VolumeMount(
+                name="shared-app",
+                mount_path="/tmp",
+            ),
+            kubernetes.client.V1VolumeMount(
+                name="scripts",
+                mount_path="/opt/mme/scripts",
+            ),
+        ]
+
+    @property
     def _service_accounts(self) -> list:
         """Return a dictionary containing parameters for the mme svc account"""
         return [
@@ -295,6 +333,24 @@ class MmeResources:
                 ),
             }
         ]
+
+    @property
+    def add_container_resource_limit(self, containers):
+        #Length of list containers
+        length = len(containers)
+        itr = 1
+
+        while itr < length:
+            containers[itr].resources = kubernetes.client.V1ResourceRequirements(
+                limits = {
+                    'cpu': '0.2',
+                    'memory': '200Mi'
+                },
+                requests = {
+                    'cpu': '0.2',
+                    'memory': '200Mi'
+                }
+            )
 
     @property
     def _services(self) -> list:

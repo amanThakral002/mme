@@ -47,8 +47,7 @@ class MmeCharm(CharmBase):
     _stored = StoredState()
 
     def __init__(self, *args):
-        super().__init__(*args)
-        self.framework.observe(self.on.mme_pebble_ready, self._on_mme_pebble_ready)
+        super().__init__(*args) 
         self.framework.observe(self.on.install, self._on_install)
         self.framework.observe(self.on.config_changed, self._on_config_changed)
         self.framework.observe(self.on.remove, self._on_remove)
@@ -86,10 +85,14 @@ class MmeCharm(CharmBase):
             self.unit.status = MaintenanceStatus("waiting for changes to apply")
 
         try:
-            # Configure and start the Metrics Scraper
+            # Configure and start the mme interface
+            self._config_mme()
+            # Configure and start the s1ap interface
             self._config_s1ap()
-            # Configure and start the Kubernetes Dashboard
-            #self._config_dashboard()
+            # Configure and start the s6a interface
+            self._config_s6a()
+            # Configure and start the s11 interface
+            self._config_s11()
         except ConnectionError:
             logger.info("pebble socket not available, deferring config-changed")
             event.defer()
@@ -97,46 +100,10 @@ class MmeCharm(CharmBase):
 
         self.unit.status = ActiveStatus()
 
-    def _push_file_to_container(self, container, srcPath, dstPath, filePermission):
-        for filePath in glob.glob(srcPath):
-            print("Loading file name:" + filePath)
-            fileData = resources.MmeResources(self).loadfile(filePath)
-            fileName = os.path.basename(filePath)
-            container.push(dstPath + fileName, fileData, make_dirs=True, permissions=filePermission)
+  
 
-    def _update_mme_and_run(self):
-        self.unit.status = MaintenanceStatus('Configuring mme-app')
-
-        # Define an initial Pebble layer configuration
-        pebble_layer = {
-            "summary": "mme-app layer",
-            "description": "pebble config layer for mme-app",
-            "services": {
-                "mme": {
-                    "override": "replace",
-                    "summary": "mme",
-                    "command": """/bin/bash -c "while true; do echo 'Running mme-app'; sleep 10; done" """,
-                    "startup": "enabled",
-                    "environment": {"thing": self.model.config["thing"]},
-                }
-            },
-        }
-
-        container = self.unit.get_container("mme")
-
-        self._push_file_to_container(container, "src/files/scripts/*.*", scriptPath, 0o755)
-        self._push_file_to_container(container, "src/files/config/*.*", configPath, 0o644)
-        # Add intial Pebble config layer using the Pebble API
-        container.add_layer("mme", pebble_layer, combine=True)
-
-        if container.get_service("mme").is_running():
-            container.stop("mme")
-        container.start("mme")
-
-        self.unit.status = ActiveStatus()
-
-    def _on_mme_pebble_ready(self, event):
-        self._update_mme_and_run()
+   
+   
 
     def _on_fortune_action(self, event):
         """Just an example to show how to receive actions.
@@ -173,22 +140,58 @@ class MmeCharm(CharmBase):
         r = resources.MmeResources(self)
         # Read the StatefulSet we're deployed into
         s = api.read_namespaced_stateful_set(name=self.app.name, namespace=self.namespace)
-        # Add the required volume mounts to the Dashboard container spec
+        # Add the required volume mounts to the mme container spec
         s.spec.template.spec.containers[1].volume_mounts.extend(r.mme_volume_mounts)
-        # Add the required volume mounts to the Scraper container spec
+        # Add the required volume mounts to the s1ap container spec
         s.spec.template.spec.containers[2].volume_mounts.extend(r.s1ap_volume_mounts)
-
+        # Add the required volume mounts to the s6a container spec
+        s.spec.template.spec.containers[3].volume_mounts.extend(r.s6a_volume_mounts)
+        # Add the required volume mounts to the s11 container spec
+        s.spec.template.spec.containers[4].volume_mounts.extend(r.s11_volume_mounts)
+        # Add additional init containers required for mme
         s.spec.template.spec.init_containers.extend(r.add_mme_init_containers)
+        # Add resource limit to each container
+        #containers = s.spec.template.spec.containers
+        #r.add_container_resource_limit(containers)
         # Add the required volumes to the StatefulSet spec
         s.spec.template.spec.volumes.extend(r.mme_volumes)
-
 
         # Patch the StatefulSet with our modified object
         api.patch_namespaced_stateful_set(name=self.app.name, namespace=self.namespace, body=s)
         logger.info("Patched StatefulSet to include additional volumes and mounts")
 
+    def _config_mme(self) -> dict:
+        """Configure Pebble to start the mme interface container"""
+        # Define a simple layer
+        # Define an initial Pebble layer configuration
+        layer = {
+            "summary": "mme-app layer",
+            "description": "pebble config layer for mme-app",
+            "services": {
+                "mme": {
+                    "override": "replace",
+                    "summary": "mme-app",
+                    "command": """/bin/bash -xc "/opt/mme/scripts/mme-run.sh mme-app" """,
+                    "startup": "enabled",
+                    "environment": {
+                        "thing": self.model.config["thing"],
+                        "POD_IP": f"{self.pod_ip}",
+                        "MMERUNENV": "container",
+                    },
+                }
+            },
+        }
+
+        # Add a Pebble config layer to the mme container
+        container = self.unit.get_container("mme")
+        container.add_layer("mme", layer, combine=True)
+        # Check if the mme service is already running and start it if not
+        if not container.get_service("mme").is_running():
+            container.start("mme")
+            logger.info("mme service started")
+
     def _config_s1ap(self) -> dict:
-        """Configure Pebble to start the Kubernetes Metrics Scraper"""
+        """Configure Pebble to start the s1ap interface container"""
         # Define a simple layer
         # Define an initial Pebble layer configuration
         layer = {
@@ -209,13 +212,69 @@ class MmeCharm(CharmBase):
             },
         }
 
-        # Add a Pebble config layer to the scraper container
+        # Add a Pebble config layer to the s1ap container
         container = self.unit.get_container("s1ap")
         container.add_layer("s1ap", layer, combine=True)
-        # Check if the scraper service is already running and start it if not
+        # Check if the s1ap service is already running and start it if not
         if not container.get_service("s1ap").is_running():
             container.start("s1ap")
             logger.info("s1ap service started")
+
+    def _config_s6a(self) -> dict:
+        """Configure Pebble to start the s6a interface container"""
+        # Define a simple layer
+        # Define an initial Pebble layer configuration
+        layer = {
+            "summary": "mme-s6a layer",
+            "description": "pebble config layer for mme-s6a",
+            "services": {
+                "s6a": {
+                    "override": "replace",
+                    "summary": "mme-s6a",
+                    "command": """/bin/bash -xc "/opt/mme/scripts/mme-run.sh s6a-app" """,
+                    "startup": "enabled",
+                    "environment": {
+                        "MMERUNENV": "container",
+                    },
+                }
+            },
+        }
+
+        # Add a Pebble config layer to the s6a container
+        container = self.unit.get_container("s6a")
+        container.add_layer("s6a", layer, combine=True)
+        # Check if the s6a service is already running and start it if not
+        if not container.get_service("s6a").is_running():
+            container.start("s6a")
+            logger.info("s6a service started")
+
+    def _config_s11(self) -> dict:
+        """Configure Pebble to start the s11 interface container"""
+        # Define a simple layer
+        # Define an initial Pebble layer configuration
+        layer = {
+            "summary": "mme-s11 layer",
+            "description": "pebble config layer for mme-s11",
+            "services": {
+                "s11": {
+                    "override": "replace",
+                    "summary": "mme-s11",
+                    "command": """/bin/bash -xc "/opt/mme/scripts/mme-run.sh s11-app" """,
+                    "startup": "enabled",
+                    "environment": {
+                        "MMERUNENV": "container",
+                    },
+                }
+            },
+        }
+
+        # Add a Pebble config layer to the s11 container
+        container = self.unit.get_container("s11")
+        container.add_layer("s11", layer, combine=True)
+        # Check if the s11 service is already running and start it if not
+        if not container.get_service("s11").is_running():
+            container.start("s11")
+            logger.info("s11 service started")
 
     def _k8s_auth(self) -> bool:
         """Authenticate to kubernetes."""

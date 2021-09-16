@@ -6,11 +6,6 @@
 
 set -ex
 
-if chroot /mnt/host-rootfs modinfo nf_conntrack_proto_sctp > /dev/null 2>&1; then
-	chroot /mnt/host-rootfs modprobe nf_conntrack_proto_sctp;
-fi;
-chroot /mnt/host-rootfs modprobe tipc
-
 cp /opt/mme/config/config.json /opt/mme/config/shared/config.json
 cd /opt/mme/config/shared
 

@@ -11,18 +11,18 @@ description: |
 summary: |
   Charm to operate and operate MME.
 
-# TEMPLATE-TODO: replace with containers for your workload (delete for non-k8s)
+# MME containers for each interface 
 containers:
   mme:
     resource: mme-image
   s1ap:
     resource: mme-image
+  s6a:
+    resource: mme-image
+  s11:
+    resource: mme-image
 
-# peers:
-#   s1ap-peer:
-#     interface: s1ap-peer
-
-
+# MME image resource
 resources:
   mme-image:
     type: oci-image
